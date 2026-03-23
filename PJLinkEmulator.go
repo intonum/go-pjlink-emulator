@@ -603,6 +603,7 @@ func main() {
 	log.SetOutput(os.Stdout)
 
 	isDisplayPtr := flag.Bool("display", false, "Emulate a display instead of a projector")
+	classPtr := flag.Int("class", 0, "Force PJLink class (1 or 2, default: auto based on projector/display mode)")
 	namePtr := flag.String("name", "", "Device name (default: random)")
 	mfgPtr := flag.String("manufacturer", "", "Manufacturer name")
 	modelPtr := flag.String("model", "", "Model name")
@@ -614,6 +615,13 @@ func main() {
 		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr)
 	} else {
 		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *lampHoursPtr)
+	}
+
+	if *classPtr != 0 {
+		if *classPtr != 1 && *classPtr != 2 {
+			log.Fatal("invalid -class value: must be 1 or 2")
+		}
+		device._PJLinkClass = *classPtr
 	}
 
 	logStartupField("Device name", device._PJLinkName)
