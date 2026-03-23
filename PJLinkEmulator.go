@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -634,13 +636,36 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	logStartupField("Listening on TCP", device._port)
 
-	go startUDPServer(device._port, &device)
+	udpServer, err := net.ListenPacket("udp", fmt.Sprintf(":%d", device._port))
+	if err != nil {
+		listener.Close()
+		panic(err)
+	}
+
+	logStartupField("Listening on TCP", device._port)
+	logStartupField("Listening on UDP", device._port)
+
+	interruptCh := make(chan os.Signal, 1)
+	signal.Notify(interruptCh, os.Interrupt)
+	defer signal.Stop(interruptCh)
+
+	go func() {
+		<-interruptCh
+		logInfoLine("Shutdown requested")
+		listener.Close()
+		udpServer.Close()
+	}()
+
+	go startUDPServer(udpServer, &device)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				logInfoLine("Shutdown complete")
+				return
+			}
 			log.Println("Accept error:", err)
 			continue
 		}
@@ -821,18 +846,14 @@ func handleCommand(inp string, conn net.Conn, device *PJLinkDevice) {
 
 // --- UDP server (PJLink search protocol) ---
 
-func startUDPServer(port int, device *PJLinkDevice) {
-	udpServer, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
-	if err != nil {
-		log.Fatal("UDP listen error:", err)
-	}
-	defer udpServer.Close()
-	logStartupField("Listening on UDP", port)
-
+func startUDPServer(udpServer net.PacketConn, device *PJLinkDevice) {
 	for {
 		buf := make([]byte, 1024)
 		_, addr, err := udpServer.ReadFrom(buf)
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
 			continue
 		}
 		go handleUDP(udpServer, addr, buf, device)
