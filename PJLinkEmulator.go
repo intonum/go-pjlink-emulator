@@ -86,6 +86,7 @@ const (
 
 const (
 	ansiReset          = "\033[0m"
+	ansiInfoColor      = "\033[38;5;214m"
 	ansiRXColor        = "\033[36m"
 	ansiTXColor        = "\033[32m"
 	ansiDetailColor    = "\033[33m"
@@ -307,6 +308,14 @@ func detailColorForLine(label, line string) string {
 	}
 
 	return ansiDetailColor
+}
+
+func logInfoLine(format string, args ...interface{}) {
+	log.Printf("%s%s%s", ansiInfoColor, fmt.Sprintf(format, args...), ansiReset)
+}
+
+func logStartupField(label string, value interface{}) {
+	logInfoLine("%-18s: %v", label, value)
 }
 
 func describePJLinkLine(line string) string {
@@ -592,7 +601,6 @@ func replyERR(header string, errCode int, conn net.Conn) {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	log.SetOutput(os.Stdout)
-	log.Println("Application version:", Version)
 
 	isDisplayPtr := flag.Bool("display", false, "Emulate a display instead of a projector")
 	namePtr := flag.String("name", "", "Device name (default: random)")
@@ -603,24 +611,22 @@ func main() {
 
 	var device PJLinkDevice
 	if *isDisplayPtr {
-		fmt.Println("Will emulate a display...")
 		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr)
 	} else {
-		fmt.Println("Will emulate a projector...")
 		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *lampHoursPtr)
 	}
 
-	log.Println("Device name       :", device._PJLinkName)
-	log.Println("Manufacturer      :", device._manufacturer)
-	log.Println("Model             :", device._model)
-	log.Println("Class             :", device._PJLinkClass)
-	log.Println("Lamp hours        :", device._PJLinkLampHours)
+	logStartupField("Device name", device._PJLinkName)
+	logStartupField("Manufacturer", device._manufacturer)
+	logStartupField("Model", device._model)
+	logStartupField("Class", device._PJLinkClass)
+	logStartupField("Lamp hours", device._PJLinkLampHours)
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", device._port))
 	if err != nil {
 		panic(err)
 	}
-	log.Printf("Listening on TCP :%d", device._port)
+	logStartupField("Listening on TCP", device._port)
 
 	go startUDPServer(device._port, &device)
 
@@ -813,7 +819,7 @@ func startUDPServer(port int, device *PJLinkDevice) {
 		log.Fatal("UDP listen error:", err)
 	}
 	defer udpServer.Close()
-	log.Printf("Listening on UDP :%d", port)
+	logStartupField("Listening on UDP", port)
 
 	for {
 		buf := make([]byte, 1024)
