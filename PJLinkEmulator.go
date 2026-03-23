@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math"
 	"math/rand"
 	"net"
 	"os"
@@ -15,8 +14,8 @@ import (
 	"time"
 )
 
-// Version should be provided during build go build
-// $ go build -ldflags "-X main.Version 1.3"
+// Version should be provided during build:
+// $ go build -ldflags "-X main.Version 1.4"
 var Version = "No Version Provided"
 
 const (
@@ -25,14 +24,11 @@ const (
 	POWER_COOLING = 2
 	POWER_WARMING = 3
 
-	AVMUTE_NONE  = 30
-	AVMUTE_VIDEO = 11
-	AVMUTE_AUDIO = 21
-	AVMUTE_BOTH  = 31
-
-	AVMUTE_UNMUTE_VIDEO = 10
-	AVMUTE_UNMUTE_AUDIO = 20
-	AVMUTE_UNMUTE_BOTH  = 30
+	// AV mute query-response values (what AVMT ? returns)
+	AVMUTE_VIDEO = 11 // video muted, audio on
+	AVMUTE_AUDIO = 21 // audio muted, video on
+	AVMUTE_BOTH  = 31 // both muted
+	AVMUTE_NONE  = 30 // both unmuted
 
 	INPUT_RGB_1 = 11
 	INPUT_RGB_2 = 12
@@ -56,13 +52,13 @@ const (
 
 	INPUT_DIGITAL_1 = 31 // HDMI 1
 	INPUT_DIGITAL_2 = 32 // HDMI 2
-	INPUT_DIGITAL_3 = 33 // DISPLAY PORT 1
-	INPUT_DIGITAL_4 = 34 // DISPLAY PORT 2
+	INPUT_DIGITAL_3 = 33 // DisplayPort 1
+	INPUT_DIGITAL_4 = 34 // DisplayPort 2
 	INPUT_DIGITAL_5 = 35 // HDBaseT
 	INPUT_DIGITAL_6 = 36 // SDI
-	INPUT_DIGITAL_7 = 37 // Not available for device
-	INPUT_DIGITAL_8 = 38 // Not available for device
-	INPUT_DIGITAL_9 = 39 // Not available for device
+	INPUT_DIGITAL_7 = 37
+	INPUT_DIGITAL_8 = 38
+	INPUT_DIGITAL_9 = 39
 
 	INPUT_STORAGE_1 = 41
 	INPUT_STORAGE_2 = 42
@@ -85,170 +81,436 @@ const (
 	INPUT_NETWORK_9 = 59
 )
 
-// PJLinkDevice store
+// PJLinkDevice holds the emulated device state.
 type PJLinkDevice struct {
-	_PJLinkUseAuthentication bool
-
-	_PJLinkPower     int
-	_PJLinkInput     int
-	_PJLinkAVMute    int
-	_PJLinkError     int
-	_PJLinkLampHours int
 	_PJLinkName      string
+	_manufacturer    string
+	_model           string
 	_PJLinkClass     int
 	_port            int
 
-	_deviceCreatedAtTime time.Time
+	_PJLinkPower     int
+	_PJLinkInput     int
+	_PJLinkAVMute    int // canonical query value: 11, 21, 31, 30
+	_PJLinkLampHours int // -1 means no lamp (display)
+	_PJLinkFreeze    int // 0 = off, 1 = frozen
+
 	_coolingDownDuration time.Duration
 	_warmingUpDuration   time.Duration
 	_deviceThermalAtTime time.Time
-	sync.Mutex           // wraps a synchronization flag
+
+	sync.Mutex
 }
 
-func (re *PJLinkDevice) turn_power_on() {
-	re.Lock()
-	defer re.Unlock()
-	if re._warmingUpDuration == 0 {
-		re._PJLinkPower = POWER_ON
+// --- State mutators ---
+
+func (d *PJLinkDevice) turnPowerOn() {
+	d.Lock()
+	defer d.Unlock()
+	if d._warmingUpDuration == 0 {
+		d._PJLinkPower = POWER_ON
 	} else {
-		re._PJLinkPower = POWER_WARMING
-		re._deviceThermalAtTime = time.Now()
+		d._PJLinkPower = POWER_WARMING
+		d._deviceThermalAtTime = time.Now()
 	}
+	log.Println("POWER -> ON request, state:", d._PJLinkPower)
 }
 
-func (re *PJLinkDevice) turn_power_off() {
-	re.Lock()
-	defer re.Unlock()
-	if re._warmingUpDuration == 0 {
-		re._PJLinkPower = POWER_OFF
+func (d *PJLinkDevice) turnPowerOff() {
+	d.Lock()
+	defer d.Unlock()
+	// Fix: was incorrectly checking _warmingUpDuration; cooling uses _coolingDownDuration
+	if d._coolingDownDuration == 0 {
+		d._PJLinkPower = POWER_OFF
 	} else {
-		re._PJLinkPower = POWER_COOLING
-		re._deviceThermalAtTime = time.Now()
+		d._PJLinkPower = POWER_COOLING
+		d._deviceThermalAtTime = time.Now()
 	}
+	log.Println("POWER -> OFF request, state:", d._PJLinkPower)
 }
 
-func (re *PJLinkDevice) set_power_thermal_status() {
-	re.Lock()
-	defer re.Unlock()
-	switch re._PJLinkPower {
-	case POWER_ON:
-	case POWER_OFF:
+// updateThermalState transitions WARMING→ON or COOLING→OFF when the duration has elapsed.
+func (d *PJLinkDevice) updateThermalState() {
+	d.Lock()
+	defer d.Unlock()
+	switch d._PJLinkPower {
 	case POWER_WARMING:
-		if re._deviceThermalAtTime.Add(re._warmingUpDuration).Before(time.Now()) {
-			re._PJLinkPower = POWER_ON
+		if time.Now().After(d._deviceThermalAtTime.Add(d._warmingUpDuration)) {
+			d._PJLinkPower = POWER_ON
+			log.Println("POWER: WARMING -> ON")
 		}
 	case POWER_COOLING:
-		if re._deviceThermalAtTime.Add(re._coolingDownDuration).Before(time.Now()) {
-			re._PJLinkPower = POWER_OFF
+		if time.Now().After(d._deviceThermalAtTime.Add(d._coolingDownDuration)) {
+			d._PJLinkPower = POWER_OFF
+			log.Println("POWER: COOLING -> OFF")
 		}
 	}
-	log.Println("POWER state:", re._PJLinkPower)
-	return
 }
 
-func (re *PJLinkDevice) set_input_source(newSource int) {
-	re.Lock()
-	defer re.Unlock()
-	if newSource < INPUT_RGB_1 || newSource > INPUT_NETWORK_9 {
-		log.Println("Error source is invalid:", newSource)
-		return
+// setInput sets the active input source. Returns false if source is out of Class 1 range.
+func (d *PJLinkDevice) setInput(source int) bool {
+	d.Lock()
+	defer d.Unlock()
+	if source < INPUT_RGB_1 || source > INPUT_NETWORK_9 {
+		log.Println("INPT: invalid source", source)
+		return false
 	}
-	re._PJLinkInput = newSource
-	log.Println("SOURCE:", re._PJLinkInput)
-	return
-
+	d._PJLinkInput = source
+	log.Println("INPT:", d._PJLinkInput)
+	return true
 }
 
-// NewProjector instance with defaults
-func NewProjector() PJLinkDevice {
-	rand.Seed(time.Now().UnixNano())
-	generatedName := "Projector Emulator " + fmt.Sprint(rand.Intn(999-1)+1)
+// setAVMute applies a mute command (11/10/21/20/31/30) and updates canonical query state.
+func (d *PJLinkDevice) setAVMute(cmd int) bool {
+	d.Lock()
+	defer d.Unlock()
 
-	projector := PJLinkDevice{}
-	projector._PJLinkName = generatedName
-	projector._PJLinkPower = POWER_OFF
-	projector._PJLinkInput = INPUT_DIGITAL_1
-	projector._PJLinkAVMute = AVMUTE_UNMUTE_BOTH
-	projector._PJLinkLampHours = 30000
-	projector._PJLinkClass = 2 // Projectors can also be of class 1
-	projector._port = 4352
+	videoMuted := d._PJLinkAVMute == AVMUTE_VIDEO || d._PJLinkAVMute == AVMUTE_BOTH
+	audioMuted := d._PJLinkAVMute == AVMUTE_AUDIO || d._PJLinkAVMute == AVMUTE_BOTH
 
-	projector._deviceCreatedAtTime = time.Now()
-	projector._coolingDownDuration = time.Duration(12 * time.Second)
-	projector._warmingUpDuration = time.Duration(6 * time.Second)
+	switch cmd {
+	case 11:
+		videoMuted = true
+	case 10:
+		videoMuted = false
+	case 21:
+		audioMuted = true
+	case 20:
+		audioMuted = false
+	case 31:
+		videoMuted, audioMuted = true, true
+	case 30:
+		videoMuted, audioMuted = false, false
+	default:
+		return false
+	}
 
-	return projector
+	switch {
+	case videoMuted && audioMuted:
+		d._PJLinkAVMute = AVMUTE_BOTH
+	case videoMuted:
+		d._PJLinkAVMute = AVMUTE_VIDEO
+	case audioMuted:
+		d._PJLinkAVMute = AVMUTE_AUDIO
+	default:
+		d._PJLinkAVMute = AVMUTE_NONE
+	}
+	log.Println("AVMT:", d._PJLinkAVMute)
+	return true
 }
 
-func NewDisplay() PJLinkDevice {
-	rand.Seed(time.Now().UnixNano())
-	generatedName := "Display Emulator " + fmt.Sprint(rand.Intn(999-1)+1)
+// --- Constructors ---
 
-	display := PJLinkDevice{}
-	display._PJLinkName = generatedName
-	display._PJLinkPower = POWER_OFF
-	display._PJLinkInput = INPUT_DIGITAL_1
-	display._PJLinkAVMute = AVMUTE_UNMUTE_BOTH
-	display._PJLinkLampHours = -1
-	display._PJLinkClass = 1 // Can displays also be of class 2 ?
-	display._port = 4352
-
-	display._deviceCreatedAtTime = time.Now()
-	display._coolingDownDuration = 0
-	display._warmingUpDuration = 0
-
-	return display
+func NewProjector(name, manufacturer, model string, lampHours int) PJLinkDevice {
+	if name == "" {
+		name = fmt.Sprintf("Projector Emulator %d", rand.Intn(998)+1)
+	}
+	if manufacturer == "" {
+		manufacturer = "PJLink Emulator Manufacturer"
+	}
+	if model == "" {
+		model = "PJLink Emulator Model"
+	}
+	if lampHours < 0 {
+		lampHours = 10
+	}
+	return PJLinkDevice{
+		_PJLinkName:          name,
+		_manufacturer:        manufacturer,
+		_model:               model,
+		_PJLinkClass:         2,
+		_port:                4352,
+		_PJLinkPower:         POWER_OFF,
+		_PJLinkInput:         INPUT_DIGITAL_1,
+		_PJLinkAVMute:        AVMUTE_NONE,
+		_PJLinkLampHours:     lampHours,
+		_PJLinkFreeze:        0,
+		_coolingDownDuration: 12 * time.Second,
+		_warmingUpDuration:   6 * time.Second,
+	}
 }
 
-// When a invalid PJLink command is received (Projector/Display failure)
-// TODO (IMplement according PJLink spec)
-var InvalidCommand = []byte("Invalid Command") // = ERR 4
+func NewDisplay(name, manufacturer, model string) PJLinkDevice {
+	if name == "" {
+		name = fmt.Sprintf("Display Emulator %d", rand.Intn(998)+1)
+	}
+	if manufacturer == "" {
+		manufacturer = "PJLink Emulator Manufacturer"
+	}
+	if model == "" {
+		model = "PJLink Emulator Model"
+	}
+	return PJLinkDevice{
+		_PJLinkName:      name,
+		_manufacturer:    manufacturer,
+		_model:           model,
+		_PJLinkClass:     1,
+		_port:            4352,
+		_PJLinkPower:     POWER_OFF,
+		_PJLinkInput:     INPUT_DIGITAL_1,
+		_PJLinkAVMute:    AVMUTE_NONE,
+		_PJLinkLampHours: -1, // no lamp
+		_PJLinkFreeze:    0,
+	}
+}
+
+// --- PJLink response helpers ---
+// All responses follow the form:  %<class><CMD>=<param>\r
+// The header is extracted from the received command line (e.g. "%1POWR" from "%1POWR ?").
+
+func cmdHeader(command string) string {
+	// Header is everything up to the first space.
+	if idx := strings.Index(command, " "); idx >= 0 {
+		return command[:idx]
+	}
+	return command
+}
+
+func replyValue(header string, value string, conn net.Conn) {
+	line := header + "=" + value + "\r"
+	conn.Write([]byte(line))
+	log.Printf("TX: %s", strings.TrimRight(line, "\r"))
+}
+
+func replyOK(header string, conn net.Conn) {
+	line := header + "=OK\r"
+	conn.Write([]byte(line))
+	log.Printf("TX: %s", strings.TrimRight(line, "\r"))
+}
+
+// replyERR sends %xCMD=ERRn\r  (errCode: 1–4)
+func replyERR(header string, errCode int, conn net.Conn) {
+	line := fmt.Sprintf("%s=ERR%d\r", header, errCode)
+	conn.Write([]byte(line))
+	log.Printf("TX: %s", strings.TrimRight(line, "\r"))
+}
+
+// --- main ---
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	log.SetOutput(os.Stdout)
-	log.Default().Println("Application version :", Version)
+	log.Println("Application version:", Version)
 
-	isDisplayPtr := flag.Bool("display", false,
-		"Emulate a display")
+	isDisplayPtr  := flag.Bool("display", false, "Emulate a display instead of a projector")
+	namePtr       := flag.String("name", "", "Device name (default: random)")
+	mfgPtr        := flag.String("manufacturer", "", "Manufacturer name")
+	modelPtr      := flag.String("model", "", "Model name")
+	lampHoursPtr  := flag.Int("lamp-hours", -1, "Lamp hours for projector (-1 = use default of 10)")
 	flag.Parse()
 
-	aDevice := NewProjector()
-	if *isDisplayPtr == true {
-		fmt.Print("Will emulate a display...")
-		aDevice = NewDisplay()
+	var device PJLinkDevice
+	if *isDisplayPtr {
+		fmt.Println("Will emulate a display...")
+		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr)
 	} else {
-		fmt.Print("Will emulate a projector...")
+		fmt.Println("Will emulate a projector...")
+		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *lampHoursPtr)
 	}
 
-	log.Println("Started emulating a PJLink device (projector/display) with Name : " + aDevice._PJLinkName)
-	listener, err := net.Listen("tcp", ":"+fmt.Sprint(aDevice._port))
+	log.Println("Device name       :", device._PJLinkName)
+	log.Println("Manufacturer      :", device._manufacturer)
+	log.Println("Model             :", device._model)
+	log.Println("Class             :", device._PJLinkClass)
+	log.Println("Lamp hours        :", device._PJLinkLampHours)
+
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", device._port))
 	if err != nil {
 		panic(err)
 	}
+	log.Printf("Listening on TCP :%d", device._port)
 
-	go start_udpServer(aDevice._port)
+	go startUDPServer(device._port, &device)
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("Accept Error", err)
+			log.Println("Accept error:", err)
 			continue
 		}
-
-		log.Println("Accepted ", conn.RemoteAddr())
+		log.Println("Connection from", conn.RemoteAddr())
+		// No-auth greeting — exactly "PJLINK 0\r"
 		conn.Write([]byte("PJLINK 0\r"))
-
-		go handleConnection(conn, &aDevice)
+		go handleConnection(conn, &device)
 	}
 }
 
-func start_udpServer(port int) {
-	// listen to incoming udp packets
-	udpServer, err := net.ListenPacket("udp", ":"+fmt.Sprint(port))
+// --- TCP connection handler ---
+
+func handleConnection(conn net.Conn, device *PJLinkDevice) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	for {
+		data, err := reader.ReadString('\r')
+		if err != nil {
+			return
+		}
+		if data == "" {
+			return
+		}
+		handleCommand(data, conn, device)
+	}
+}
+
+func handleCommand(inp string, conn net.Conn, device *PJLinkDevice) {
+	// Strip CR (and any stray LF)
+	command := strings.TrimRight(inp, "\r\n")
+	command = strings.TrimSpace(command)
+
+	if len(command) == 0 {
+		return
+	}
+
+	if command[0] != '%' {
+		log.Println("RX (ignored, not PJLink):", command)
+		return
+	}
+
+	log.Println("RX:", command)
+	header := cmdHeader(command)
+
+	switch command {
+
+	// ── Class 1 queries ──────────────────────────────────────────────
+
+	case "%1CLSS ?":
+		replyValue(header, fmt.Sprint(device._PJLinkClass), conn)
+
+	case "%1NAME ?":
+		replyValue(header, device._PJLinkName, conn)
+
+	case "%1INF1 ?":
+		replyValue(header, device._manufacturer, conn)
+
+	case "%1INF2 ?":
+		replyValue(header, device._model, conn)
+
+	// ── Power ────────────────────────────────────────────────────────
+
+	case "%1POWR ?":
+		device.updateThermalState()
+		replyValue(header, fmt.Sprint(device._PJLinkPower), conn)
+
+	case "%1POWR 1":
+		device.turnPowerOn()
+		replyOK(header, conn)
+
+	case "%1POWR 0":
+		device.turnPowerOff()
+		replyOK(header, conn)
+
+	// ── Lamp ─────────────────────────────────────────────────────────
+
+	case "%1LAMP ?":
+		if device._PJLinkLampHours < 0 {
+			// No lamp installed → ERR1 per PJLink spec
+			replyERR(header, 1, conn)
+		} else {
+			// Static hours + current on/off state
+			onoff := 0
+			if device._PJLinkPower == POWER_ON || device._PJLinkPower == POWER_WARMING {
+				onoff = 1
+			}
+			replyValue(header, fmt.Sprintf("%d %d", device._PJLinkLampHours, onoff), conn)
+		}
+
+	// ── Input ────────────────────────────────────────────────────────
+
+	case "%1INPT ?":
+		replyValue(header, fmt.Sprint(device._PJLinkInput), conn)
+
+	// ── AV Mute ──────────────────────────────────────────────────────
+
+	case "%1AVMT ?":
+		replyValue(header, fmt.Sprint(device._PJLinkAVMute), conn)
+
+	case "%1AVMT 11", "%1AVMT 10",
+		"%1AVMT 21", "%1AVMT 20",
+		"%1AVMT 31", "%1AVMT 30":
+		param := strings.TrimPrefix(command, "%1AVMT ")
+		cmd, _ := strconv.Atoi(param)
+		if !device.setAVMute(cmd) {
+			replyERR(header, 2, conn)
+		} else {
+			replyOK(header, conn)
+		}
+
+	// ── Class 2: Freeze ──────────────────────────────────────────────
+
+	case "%2FREZ ?":
+		if device._PJLinkClass < 2 {
+			replyERR(header, 1, conn) // ERR1 = undefined/unsupported
+		} else {
+			replyValue(header, fmt.Sprint(device._PJLinkFreeze), conn)
+		}
+
+	case "%2FREZ 1":
+		if device._PJLinkClass < 2 {
+			replyERR(header, 1, conn)
+		} else {
+			device.Lock()
+			device._PJLinkFreeze = 1
+			device.Unlock()
+			replyOK(header, conn)
+		}
+
+	case "%2FREZ 0":
+		if device._PJLinkClass < 2 {
+			replyERR(header, 1, conn)
+		} else {
+			device.Lock()
+			device._PJLinkFreeze = 0
+			device.Unlock()
+			replyOK(header, conn)
+		}
+
+	// ── Class 2: Speaker / Microphone volume ─────────────────────────
+	// Minimal implementation: acknowledge but do not model actual levels.
+
+	case "%2SVOL 1", "%2SVOL 0":
+		if device._PJLinkClass < 2 {
+			replyERR(header, 1, conn)
+		} else {
+			replyOK(header, conn)
+		}
+
+	case "%2MVOL 1", "%2MVOL 0":
+		if device._PJLinkClass < 2 {
+			replyERR(header, 1, conn)
+		} else {
+			replyOK(header, conn)
+		}
+
+	// ── Default ──────────────────────────────────────────────────────
+
+	default:
+		// Dynamic input-switch command: %1INPT <11..59>
+		if strings.HasPrefix(command, "%1INPT ") {
+			param := strings.TrimPrefix(command, "%1INPT ")
+			source, err := strconv.Atoi(param)
+			if err != nil || source < INPUT_RGB_1 || source > INPUT_NETWORK_9 {
+				replyERR(header, 2, conn) // ERR2 = out of parameter
+				return
+			}
+			device.setInput(source)
+			replyOK(header, conn)
+			return
+		}
+
+		// All other unrecognised %x… commands → ERR1 (undefined command)
+		replyERR(header, 1, conn)
+	}
+}
+
+// --- UDP server (PJLink search protocol) ---
+
+func startUDPServer(port int, device *PJLinkDevice) {
+	udpServer, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("UDP listen error:", err)
 	}
 	defer udpServer.Close()
+	log.Printf("Listening on UDP :%d", port)
 
 	for {
 		buf := make([]byte, 1024)
@@ -256,112 +518,18 @@ func start_udpServer(port int) {
 		if err != nil {
 			continue
 		}
-		go response(udpServer, addr, buf)
-	}
-
-}
-
-func response(udpServer net.PacketConn, addr net.Addr, buf []byte) {
-	time := time.Now().Format(time.ANSIC)
-	responseStr := fmt.Sprintf("time received: %v. Your message: %v!", time, string(buf))
-
-	udpServer.WriteTo([]byte(responseStr), addr)
-}
-
-func handleConnection(conn net.Conn, projector *PJLinkDevice) {
-	defer conn.Close()
-
-	s := bufio.NewReader(conn)
-	for {
-		data, err := s.ReadString('\r')
-
-		if err != nil {
-			return
-		}
-
-		if data == "" {
-			conn.Write([]byte(">"))
-			//continue
-			return
-		}
-
-		if data == "exit" {
-			return
-		}
-
-		handleCommand(data, conn, projector)
+		go handleUDP(udpServer, addr, buf, device)
 	}
 }
 
-func handleCommand(inp string, conn net.Conn, pjLinkDevice *PJLinkDevice) {
+func handleUDP(udpServer net.PacketConn, addr net.Addr, buf []byte, device *PJLinkDevice) {
+	msg := strings.TrimRight(string(buf), "\x00\r\n")
+	log.Println("UDP RX:", msg, "from", addr)
 
-	if len(inp) <= 0 || inp[0] != '%' {
-		conn.Write(InvalidCommand)
-		return
+	if msg == "%2SRCH" {
+		// Respond with a dummy MAC address per PJLink search spec
+		resp := "%2ACKN=00:00:00:00:00:00\r"
+		udpServer.WriteTo([]byte(resp), addr)
+		log.Println("UDP TX:", strings.TrimRight(resp, "\r"))
 	}
-
-	command := strings.TrimRight(inp, "\r") //remove '\r'
-
-	switch command {
-	case "%1POWR ?":
-		pjLinkDevice.set_power_thermal_status()
-		get(command, fmt.Sprint(pjLinkDevice._PJLinkPower), conn)
-	case "%1POWR 1":
-		pjLinkDevice.turn_power_on()
-		replyOK(command, conn)
-	case "%1POWR 0":
-		pjLinkDevice.turn_power_off()
-		replyOK(command, conn)
-	case "%1NAME ?":
-		get(command, fmt.Sprint(pjLinkDevice._PJLinkName), conn)
-	case "%1LAMP ?":
-		if pjLinkDevice._PJLinkLampHours == -1 {
-			// No lamp available:
-			// Returning PJLink 'NoLamp' result (See README.md PJLink Class 2, PDF)
-			replyERR1(command, conn)
-		} else {
-			hoursInUse := math.Round(time.Now().Sub(pjLinkDevice._deviceCreatedAtTime).Seconds())
-			remainingHours := pjLinkDevice._PJLinkLampHours - int(math.Mod(hoursInUse, float64(pjLinkDevice._PJLinkLampHours)))
-			get(command, fmt.Sprint(remainingHours), conn)
-		}
-	case "%1INPT ?":
-		get(command, fmt.Sprint(pjLinkDevice._PJLinkInput), conn)
-	case "%1CLSS ?":
-		get(command, fmt.Sprint(pjLinkDevice._PJLinkClass), conn)
-	default:
-		if strings.HasPrefix(command, "%1INPT ") == true {
-			newInputSource, _ := strconv.Atoi(strings.TrimPrefix(command, "%1INPT "))
-
-			pjLinkDevice.set_input_source(newInputSource)
-			replyOK(command, conn)
-			break
-		}
-
-		conn.Write(InvalidCommand)
-	}
-
-	conn.Write([]byte("\n>"))
-}
-
-func replyOK(cmd string, conn net.Conn) {
-	str := strings.Split(cmd, " ")
-	conn.Write([]byte(str[0] + "=OK"))
-}
-
-func replyERR1(cmd string, conn net.Conn) {
-	str := strings.Split(cmd, " ")
-	conn.Write([]byte(str[0] + "=ERR1"))
-}
-
-func get(cmd string, value string, conn net.Conn) {
-
-	if len(cmd) < 1 {
-		conn.Write(InvalidCommand)
-		return
-	}
-
-	ret := strings.Replace(cmd, " ?", "="+value+"\r", 1)
-
-	conn.Write([]byte(ret))
-	log.Println("send : ", ret)
 }
