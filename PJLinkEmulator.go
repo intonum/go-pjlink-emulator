@@ -669,7 +669,7 @@ func main() {
 			log.Println("Accept error:", err)
 			continue
 		}
-		log.Println("Connection from", conn.RemoteAddr())
+		logInfoLine("Connection from %s", conn.RemoteAddr())
 		// No-auth greeting — exactly "PJLINK 0\r"
 		conn.Write([]byte("PJLINK 0\r"))
 		logProtocolLine("TX", ansiTXColor, "PJLINK 0\r")
