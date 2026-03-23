@@ -147,11 +147,22 @@ func (d *PJLinkDevice) updateThermalState() {
 	}
 }
 
+func validInputSource(source int) bool {
+	if source < INPUT_RGB_1 || source > INPUT_NETWORK_9 {
+		return false
+	}
+
+	terminal := source % 10
+	category := source / 10
+
+	return terminal >= 1 && terminal <= 9 && category >= 1 && category <= 5
+}
+
 // setInput sets the active input source. Returns false if source is out of Class 1 range.
 func (d *PJLinkDevice) setInput(source int) bool {
 	d.Lock()
 	defer d.Unlock()
-	if source < INPUT_RGB_1 || source > INPUT_NETWORK_9 {
+	if !validInputSource(source) {
 		log.Println("INPT: invalid source", source)
 		return false
 	}
@@ -488,7 +499,7 @@ func handleCommand(inp string, conn net.Conn, device *PJLinkDevice) {
 		if strings.HasPrefix(command, "%1INPT ") {
 			param := strings.TrimPrefix(command, "%1INPT ")
 			source, err := strconv.Atoi(param)
-			if err != nil || source < INPUT_RGB_1 || source > INPUT_NETWORK_9 {
+			if err != nil || !validInputSource(source) {
 				replyERR(header, 2, conn) // ERR2 = out of parameter
 				return
 			}
