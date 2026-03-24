@@ -33,7 +33,6 @@ const (
 	AVMUTE_AUDIO        = 21 // audio muted, video on
 	AVMUTE_BOTH         = 31 // both muted
 	AVMUTE_NONE         = 30 // both unmuted
-	AVMUTE_UNMUTE_BOTH  = 30
 
 	INPUT_RGB_1 = 11
 	INPUT_RGB_2 = 12
@@ -402,7 +401,7 @@ func describePJLinkCommand(line string) string {
 			return "audio got unmuted"
 		case fmt.Sprint(AVMUTE_BOTH):
 			return "A/V mute requested"
-		case fmt.Sprint(AVMUTE_UNMUTE_BOTH):
+		case fmt.Sprint(AVMUTE_NONE):
 			return "audio and video got unmuted"
 		}
 	case "%2FREZ":
