@@ -92,7 +92,7 @@ const (
 	ansiRXColor        = "\033[36m"
 	ansiTXColor        = "\033[32m"
 	ansiDetailColor    = "\033[33m"
-	ansiSetDetailColor = "\033[35m"
+	ansiSetDetailColor = "\033[38;2;255;0;0m"
 )
 
 // PJLinkDevice holds the emulated device state.
