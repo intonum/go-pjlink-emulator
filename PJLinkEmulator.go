@@ -110,7 +110,7 @@ type PJLinkDevice struct {
 	_PJLinkPower     int
 	_PJLinkInput     int
 	_PJLinkAVMute    int // canonical query value: 11, 21, 31, 30
-	_PJLinkLampHours int // -1 means no lamp (display)
+	_PJLinkLampHours int // negative means no lamp installed
 	_PJLinkFreeze    int // 0 = off, 1 = frozen
 
 	_coolingDownDuration time.Duration
@@ -336,50 +336,6 @@ func NewProjector(name, manufacturer, model, info, errorStatus string, inputList
 		_PJLinkFreeze:        0,
 		_coolingDownDuration: 12 * time.Second,
 		_warmingUpDuration:   6 * time.Second,
-	}
-}
-
-func NewDisplay(name, manufacturer, model, info, errorStatus string, inputList []int, serialNumber, softwareVersion string) PJLinkDevice {
-	if name == "" {
-		name = fmt.Sprintf("Display Emulator %d", rand.Intn(998)+1)
-	}
-	if manufacturer == "" {
-		manufacturer = "PJLink Emulator Manufacturer"
-	}
-	if model == "" {
-		model = "PJLink Emulator Model"
-	}
-	if info == "" {
-		info = "PJLink emulator device"
-	}
-	if errorStatus == "" {
-		errorStatus = "000000"
-	}
-	if len(inputList) == 0 {
-		inputList = defaultInputList()
-	}
-	if serialNumber == "" {
-		serialNumber = "AB12CD34EF"
-	}
-	if softwareVersion == "" {
-		softwareVersion = "1.0.0"
-	}
-	return PJLinkDevice{
-		_PJLinkName:      name,
-		_manufacturer:    manufacturer,
-		_model:           model,
-		_info:            info,
-		_errorStatus:     errorStatus,
-		_inputList:       inputList,
-		_serialNumber:    serialNumber,
-		_softwareVersion: softwareVersion,
-		_PJLinkClass:     1,
-		_port:            4352,
-		_PJLinkPower:     POWER_OFF,
-		_PJLinkInput:     INPUT_DIGITAL_1,
-		_PJLinkAVMute:    AVMUTE_NONE,
-		_PJLinkLampHours: -1, // no lamp
-		_PJLinkFreeze:    0,
 	}
 }
 
@@ -765,8 +721,7 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 	log.SetOutput(os.Stdout)
 
-	isDisplayPtr := flag.Bool("display", false, "Emulate a display instead of a projector")
-	classPtr := flag.Int("class", 0, "Force PJLink class (1 or 2, default: auto based on projector/display mode)")
+	classPtr := flag.Int("class", 0, "Force PJLink class (1 or 2, default: 2)")
 	namePtr := flag.String("name", "", "Device name (default: random)")
 	mfgPtr := flag.String("manufacturer", "", "Manufacturer name")
 	modelPtr := flag.String("model", "", "Model name")
@@ -783,12 +738,7 @@ func main() {
 		log.Fatal("invalid -inst value: use unique PJLink input codes separated by commas or spaces")
 	}
 
-	var device PJLinkDevice
-	if *isDisplayPtr {
-		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList, *serialPtr, *sverPtr)
-	} else {
-		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList, *serialPtr, *sverPtr, *lampHoursPtr)
-	}
+	device := NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList, *serialPtr, *sverPtr, *lampHoursPtr)
 
 	if !validErrorStatus(device._errorStatus) {
 		log.Fatal("invalid -erst value: must be exactly 6 digits using only 0, 1, or 2")
