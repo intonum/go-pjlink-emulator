@@ -6,14 +6,16 @@ PJLink device emulator written in Go.
 
 - No-auth greeting (`PJLINK 0\r`)
 - PJLink-formatted TCP responses terminated with `\r`
-- Projector mode and display mode
-- Configurable device name, manufacturer, model, lamp hours, and PJLink class via CLI flags
+- Configurable device name, manufacturer, model, other information, error status, input list, serial number, software version, lamp hours, and PJLink class via CLI flags
 - Power state handling with warm-up and cool-down timing
 - Class 1 commands:
   - `%1CLSS ?`
   - `%1NAME ?`
   - `%1INF1 ?`
   - `%1INF2 ?`
+  - `%1INFO ?`
+  - `%1ERST ?`
+  - `%1INST ?`
   - `%1POWR ?`, `%1POWR 0`, `%1POWR 1`
   - `%1LAMP ?`
   - `%1INPT ?`, `%1INPT <source>`
@@ -22,18 +24,14 @@ PJLink device emulator written in Go.
   - `%2FREZ ?`, `%2FREZ 0`, `%2FREZ 1`
   - `%2SVOL 0`, `%2SVOL 1`
   - `%2MVOL 0`, `%2MVOL 1`
+  - `%2SNUM ?`
+  - `%2SVER ?`
 - Basic UDP `%2SRCH` / `%2ACKN=` discovery stub
 
 ## Missing features
 
 - Authentication (`PJLINK 1`)
-- Class 1 commands not implemented:
-  - `%1ERST ?`
-  - `%1INST ?`
-  - `%1INFO ?`
 - Class 2 commands not implemented:
-  - `%2SNUM ?`
-  - `%2SVER ?`
   - `%2INNM ?`
   - `%2IRES ?`
   - `%2RRES ?`
@@ -49,11 +47,8 @@ PJLink device emulator written in Go.
 ```bash
 go run PJLinkEmulator.go -name "Projector Emulator 661" -manufacturer "Epson" -model "Test Model" -lamp-hours 10
 
-# display mode
-go run PJLinkEmulator.go -display
-
-# force class override
-go run PJLinkEmulator.go -class 1
+# with additional metadata
+go run PJLinkEmulator.go -name "AV365 projektor" -manufacturer "Epson" -model "EH-TW7100" -info "Living room projector" -erst 001002 -inst "31,32,51" -serial AB12CD34EF -sver "1.0.0" -lamp-hours 1337 -class 2
 ```
 
 ## References
