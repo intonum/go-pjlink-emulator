@@ -102,6 +102,7 @@ type PJLinkDevice struct {
 	_info         string
 	_errorStatus  string
 	_inputList    []int
+	_serialNumber string
 	_PJLinkClass  int
 	_port         int
 
@@ -288,7 +289,7 @@ func (d *PJLinkDevice) setAVMute(cmd int) bool {
 
 // --- Constructors ---
 
-func NewProjector(name, manufacturer, model, info, errorStatus string, inputList []int, lampHours int) PJLinkDevice {
+func NewProjector(name, manufacturer, model, info, errorStatus string, inputList []int, serialNumber string, lampHours int) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Projector Emulator %d", rand.Intn(998)+1)
 	}
@@ -307,6 +308,9 @@ func NewProjector(name, manufacturer, model, info, errorStatus string, inputList
 	if len(inputList) == 0 {
 		inputList = defaultInputList()
 	}
+	if serialNumber == "" {
+		serialNumber = "AB12CD34EF"
+	}
 	if lampHours < 0 {
 		lampHours = 10
 	}
@@ -317,6 +321,7 @@ func NewProjector(name, manufacturer, model, info, errorStatus string, inputList
 		_info:                info,
 		_errorStatus:         errorStatus,
 		_inputList:           inputList,
+		_serialNumber:        serialNumber,
 		_PJLinkClass:         2,
 		_port:                4352,
 		_PJLinkPower:         POWER_OFF,
@@ -329,7 +334,7 @@ func NewProjector(name, manufacturer, model, info, errorStatus string, inputList
 	}
 }
 
-func NewDisplay(name, manufacturer, model, info, errorStatus string, inputList []int) PJLinkDevice {
+func NewDisplay(name, manufacturer, model, info, errorStatus string, inputList []int, serialNumber string) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Display Emulator %d", rand.Intn(998)+1)
 	}
@@ -348,6 +353,9 @@ func NewDisplay(name, manufacturer, model, info, errorStatus string, inputList [
 	if len(inputList) == 0 {
 		inputList = defaultInputList()
 	}
+	if serialNumber == "" {
+		serialNumber = "AB12CD34EF"
+	}
 	return PJLinkDevice{
 		_PJLinkName:      name,
 		_manufacturer:    manufacturer,
@@ -355,6 +363,7 @@ func NewDisplay(name, manufacturer, model, info, errorStatus string, inputList [
 		_info:            info,
 		_errorStatus:     errorStatus,
 		_inputList:       inputList,
+		_serialNumber:    serialNumber,
 		_PJLinkClass:     1,
 		_port:            4352,
 		_PJLinkPower:     POWER_OFF,
@@ -533,6 +542,10 @@ func describePJLinkCommand(line string) string {
 		case "1":
 			return "microphone volume up requested"
 		}
+	case "%2SNUM":
+		if param == "?" {
+			return "query serial number"
+		}
 	}
 
 	return ""
@@ -617,6 +630,8 @@ func describePJLinkResponse(line string) string {
 		case "1":
 			return "image frozen"
 		}
+	case "%2SNUM":
+		return "serial number"
 	}
 
 	return ""
@@ -743,6 +758,7 @@ func main() {
 	infoPtr := flag.String("info", "", "Other device information returned by %1INFO ?")
 	erstPtr := flag.String("erst", "", "Error status returned by %1ERST ? as 6 digits using only 0, 1, or 2")
 	instPtr := flag.String("inst", "", "Available inputs returned by %1INST ? as a comma- or space-separated list, e.g. 31,32,51")
+	serialPtr := flag.String("serial", "", "Serial number returned by %2SNUM ? as 10 uppercase letters/digits")
 	lampHoursPtr := flag.Int("lamp-hours", -1, "Lamp hours for projector (-1 = use default of 10)")
 	flag.Parse()
 
@@ -753,9 +769,9 @@ func main() {
 
 	var device PJLinkDevice
 	if *isDisplayPtr {
-		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList)
+		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList, *serialPtr)
 	} else {
-		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList, *lampHoursPtr)
+		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList, *serialPtr, *lampHoursPtr)
 	}
 
 	if !validErrorStatus(device._errorStatus) {
@@ -775,6 +791,7 @@ func main() {
 	logStartupField("Other info", device._info)
 	logStartupField("Error status", device._errorStatus)
 	logStartupField("Input list", formatInputList(device._inputList))
+	logStartupField("Serial", device._serialNumber)
 	logStartupField("Class", device._PJLinkClass)
 	logStartupField("Lamp hours", device._PJLinkLampHours)
 
@@ -976,6 +993,13 @@ func handleCommand(inp string, conn net.Conn, device *PJLinkDevice) {
 			replyERR(header, 1, conn)
 		} else {
 			replyOK(header, conn)
+		}
+
+	case "%2SNUM ?":
+		if device._PJLinkClass < 2 {
+			replyERR(header, 1, conn)
+		} else {
+			replyValue(header, device._serialNumber, conn)
 		}
 
 	// ── Default ──────────────────────────────────────────────────────
