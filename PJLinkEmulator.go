@@ -100,6 +100,7 @@ type PJLinkDevice struct {
 	_manufacturer string
 	_model        string
 	_info         string
+	_errorStatus  string
 	_PJLinkClass  int
 	_port         int
 
@@ -168,6 +169,20 @@ func validInputSource(source int) bool {
 	return terminal >= 1 && terminal <= 9 && category >= 1 && category <= 5
 }
 
+func validErrorStatus(status string) bool {
+	if len(status) != 6 {
+		return false
+	}
+
+	for _, r := range status {
+		if r < '0' || r > '2' {
+			return false
+		}
+	}
+
+	return true
+}
+
 // setInput sets the active input source. Returns false if source is out of Class 1 range.
 func (d *PJLinkDevice) setInput(source int) bool {
 	d.Lock()
@@ -219,7 +234,7 @@ func (d *PJLinkDevice) setAVMute(cmd int) bool {
 
 // --- Constructors ---
 
-func NewProjector(name, manufacturer, model, info string, lampHours int) PJLinkDevice {
+func NewProjector(name, manufacturer, model, info, errorStatus string, lampHours int) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Projector Emulator %d", rand.Intn(998)+1)
 	}
@@ -232,6 +247,9 @@ func NewProjector(name, manufacturer, model, info string, lampHours int) PJLinkD
 	if info == "" {
 		info = "PJLink emulator device"
 	}
+	if errorStatus == "" {
+		errorStatus = "000000"
+	}
 	if lampHours < 0 {
 		lampHours = 10
 	}
@@ -240,6 +258,7 @@ func NewProjector(name, manufacturer, model, info string, lampHours int) PJLinkD
 		_manufacturer:        manufacturer,
 		_model:               model,
 		_info:                info,
+		_errorStatus:         errorStatus,
 		_PJLinkClass:         2,
 		_port:                4352,
 		_PJLinkPower:         POWER_OFF,
@@ -252,7 +271,7 @@ func NewProjector(name, manufacturer, model, info string, lampHours int) PJLinkD
 	}
 }
 
-func NewDisplay(name, manufacturer, model, info string) PJLinkDevice {
+func NewDisplay(name, manufacturer, model, info, errorStatus string) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Display Emulator %d", rand.Intn(998)+1)
 	}
@@ -265,11 +284,15 @@ func NewDisplay(name, manufacturer, model, info string) PJLinkDevice {
 	if info == "" {
 		info = "PJLink emulator device"
 	}
+	if errorStatus == "" {
+		errorStatus = "000000"
+	}
 	return PJLinkDevice{
 		_PJLinkName:      name,
 		_manufacturer:    manufacturer,
 		_model:           model,
 		_info:            info,
+		_errorStatus:     errorStatus,
 		_PJLinkClass:     1,
 		_port:            4352,
 		_PJLinkPower:     POWER_OFF,
@@ -378,6 +401,10 @@ func describePJLinkCommand(line string) string {
 		if param == "?" {
 			return "query other information"
 		}
+	case "%1ERST":
+		if param == "?" {
+			return "query error status"
+		}
 	case "%1POWR":
 		switch param {
 		case "?":
@@ -477,6 +504,8 @@ func describePJLinkResponse(line string) string {
 		return "model"
 	case "%1INFO":
 		return "other information"
+	case "%1ERST":
+		return describeErrorStatus(value)
 	case "%1POWR":
 		switch value {
 		case "0":
@@ -559,6 +588,26 @@ func describePJLinkError(errCode string) string {
 	}
 }
 
+func describeErrorStatus(value string) string {
+	if !validErrorStatus(value) {
+		return ""
+	}
+
+	labels := []string{"fan", "lamp", "temperature", "cover", "filter", "other"}
+	states := map[byte]string{
+		'0': "ok",
+		'1': "warning",
+		'2': "error",
+	}
+
+	parts := make([]string, 0, len(labels))
+	for idx, label := range labels {
+		parts = append(parts, fmt.Sprintf("%s %s", label, states[value[idx]]))
+	}
+
+	return strings.Join(parts, ", ")
+}
+
 func describeInputSource(source int) string {
 	switch source {
 	case INPUT_DIGITAL_1:
@@ -624,14 +673,19 @@ func main() {
 	mfgPtr := flag.String("manufacturer", "", "Manufacturer name")
 	modelPtr := flag.String("model", "", "Model name")
 	infoPtr := flag.String("info", "", "Other device information returned by %1INFO ?")
+	erstPtr := flag.String("erst", "", "Error status returned by %1ERST ? as 6 digits using only 0, 1, or 2")
 	lampHoursPtr := flag.Int("lamp-hours", -1, "Lamp hours for projector (-1 = use default of 10)")
 	flag.Parse()
 
 	var device PJLinkDevice
 	if *isDisplayPtr {
-		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr)
+		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr)
 	} else {
-		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *lampHoursPtr)
+		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, *lampHoursPtr)
+	}
+
+	if !validErrorStatus(device._errorStatus) {
+		log.Fatal("invalid -erst value: must be exactly 6 digits using only 0, 1, or 2")
 	}
 
 	if *classPtr != 0 {
@@ -645,6 +699,7 @@ func main() {
 	logStartupField("Manufacturer", device._manufacturer)
 	logStartupField("Model", device._model)
 	logStartupField("Other info", device._info)
+	logStartupField("Error status", device._errorStatus)
 	logStartupField("Class", device._PJLinkClass)
 	logStartupField("Lamp hours", device._PJLinkLampHours)
 
@@ -745,6 +800,9 @@ func handleCommand(inp string, conn net.Conn, device *PJLinkDevice) {
 
 	case "%1INFO ?":
 		replyValue(header, device._info, conn)
+
+	case "%1ERST ?":
+		replyValue(header, device._errorStatus, conn)
 
 	// ── Power ────────────────────────────────────────────────────────
 
