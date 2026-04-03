@@ -99,6 +99,7 @@ type PJLinkDevice struct {
 	_PJLinkName   string
 	_manufacturer string
 	_model        string
+	_info         string
 	_PJLinkClass  int
 	_port         int
 
@@ -218,7 +219,7 @@ func (d *PJLinkDevice) setAVMute(cmd int) bool {
 
 // --- Constructors ---
 
-func NewProjector(name, manufacturer, model string, lampHours int) PJLinkDevice {
+func NewProjector(name, manufacturer, model, info string, lampHours int) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Projector Emulator %d", rand.Intn(998)+1)
 	}
@@ -228,6 +229,9 @@ func NewProjector(name, manufacturer, model string, lampHours int) PJLinkDevice 
 	if model == "" {
 		model = "PJLink Emulator Model"
 	}
+	if info == "" {
+		info = "PJLink emulator device"
+	}
 	if lampHours < 0 {
 		lampHours = 10
 	}
@@ -235,6 +239,7 @@ func NewProjector(name, manufacturer, model string, lampHours int) PJLinkDevice 
 		_PJLinkName:          name,
 		_manufacturer:        manufacturer,
 		_model:               model,
+		_info:                info,
 		_PJLinkClass:         2,
 		_port:                4352,
 		_PJLinkPower:         POWER_OFF,
@@ -247,7 +252,7 @@ func NewProjector(name, manufacturer, model string, lampHours int) PJLinkDevice 
 	}
 }
 
-func NewDisplay(name, manufacturer, model string) PJLinkDevice {
+func NewDisplay(name, manufacturer, model, info string) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Display Emulator %d", rand.Intn(998)+1)
 	}
@@ -257,10 +262,14 @@ func NewDisplay(name, manufacturer, model string) PJLinkDevice {
 	if model == "" {
 		model = "PJLink Emulator Model"
 	}
+	if info == "" {
+		info = "PJLink emulator device"
+	}
 	return PJLinkDevice{
 		_PJLinkName:      name,
 		_manufacturer:    manufacturer,
 		_model:           model,
+		_info:            info,
 		_PJLinkClass:     1,
 		_port:            4352,
 		_PJLinkPower:     POWER_OFF,
@@ -365,6 +374,10 @@ func describePJLinkCommand(line string) string {
 		if param == "?" {
 			return "query model"
 		}
+	case "%1INFO":
+		if param == "?" {
+			return "query other information"
+		}
 	case "%1POWR":
 		switch param {
 		case "?":
@@ -462,6 +475,8 @@ func describePJLinkResponse(line string) string {
 		return "manufacturer"
 	case "%1INF2":
 		return "model"
+	case "%1INFO":
+		return "other information"
 	case "%1POWR":
 		switch value {
 		case "0":
@@ -608,14 +623,15 @@ func main() {
 	namePtr := flag.String("name", "", "Device name (default: random)")
 	mfgPtr := flag.String("manufacturer", "", "Manufacturer name")
 	modelPtr := flag.String("model", "", "Model name")
+	infoPtr := flag.String("info", "", "Other device information returned by %1INFO ?")
 	lampHoursPtr := flag.Int("lamp-hours", -1, "Lamp hours for projector (-1 = use default of 10)")
 	flag.Parse()
 
 	var device PJLinkDevice
 	if *isDisplayPtr {
-		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr)
+		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr)
 	} else {
-		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *lampHoursPtr)
+		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *lampHoursPtr)
 	}
 
 	if *classPtr != 0 {
@@ -628,6 +644,7 @@ func main() {
 	logStartupField("Device name", device._PJLinkName)
 	logStartupField("Manufacturer", device._manufacturer)
 	logStartupField("Model", device._model)
+	logStartupField("Other info", device._info)
 	logStartupField("Class", device._PJLinkClass)
 	logStartupField("Lamp hours", device._PJLinkLampHours)
 
@@ -725,6 +742,9 @@ func handleCommand(inp string, conn net.Conn, device *PJLinkDevice) {
 
 	case "%1INF2 ?":
 		replyValue(header, device._model, conn)
+
+	case "%1INFO ?":
+		replyValue(header, device._info, conn)
 
 	// ── Power ────────────────────────────────────────────────────────
 
