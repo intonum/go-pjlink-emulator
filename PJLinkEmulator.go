@@ -101,6 +101,7 @@ type PJLinkDevice struct {
 	_model        string
 	_info         string
 	_errorStatus  string
+	_inputList    []int
 	_PJLinkClass  int
 	_port         int
 
@@ -183,11 +184,64 @@ func validErrorStatus(status string) bool {
 	return true
 }
 
+func defaultInputList() []int {
+	inputs := make([]int, 0, 45)
+	for category := 1; category <= 5; category++ {
+		for terminal := 1; terminal <= 9; terminal++ {
+			inputs = append(inputs, category*10+terminal)
+		}
+	}
+	return inputs
+}
+
+func parseInputList(spec string) ([]int, bool) {
+	if strings.TrimSpace(spec) == "" {
+		return defaultInputList(), true
+	}
+
+	parts := strings.FieldsFunc(spec, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t'
+	})
+	if len(parts) == 0 {
+		return nil, false
+	}
+
+	inputs := make([]int, 0, len(parts))
+	seen := make(map[int]bool, len(parts))
+	for _, part := range parts {
+		source, err := strconv.Atoi(part)
+		if err != nil || !validInputSource(source) || seen[source] {
+			return nil, false
+		}
+		seen[source] = true
+		inputs = append(inputs, source)
+	}
+
+	return inputs, true
+}
+
+func formatInputList(inputs []int) string {
+	parts := make([]string, 0, len(inputs))
+	for _, input := range inputs {
+		parts = append(parts, strconv.Itoa(input))
+	}
+	return strings.Join(parts, " ")
+}
+
+func inputListContains(inputs []int, source int) bool {
+	for _, input := range inputs {
+		if input == source {
+			return true
+		}
+	}
+	return false
+}
+
 // setInput sets the active input source. Returns false if source is out of Class 1 range.
 func (d *PJLinkDevice) setInput(source int) bool {
 	d.Lock()
 	defer d.Unlock()
-	if !validInputSource(source) {
+	if !validInputSource(source) || !inputListContains(d._inputList, source) {
 		return false
 	}
 	d._PJLinkInput = source
@@ -234,7 +288,7 @@ func (d *PJLinkDevice) setAVMute(cmd int) bool {
 
 // --- Constructors ---
 
-func NewProjector(name, manufacturer, model, info, errorStatus string, lampHours int) PJLinkDevice {
+func NewProjector(name, manufacturer, model, info, errorStatus string, inputList []int, lampHours int) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Projector Emulator %d", rand.Intn(998)+1)
 	}
@@ -250,6 +304,9 @@ func NewProjector(name, manufacturer, model, info, errorStatus string, lampHours
 	if errorStatus == "" {
 		errorStatus = "000000"
 	}
+	if len(inputList) == 0 {
+		inputList = defaultInputList()
+	}
 	if lampHours < 0 {
 		lampHours = 10
 	}
@@ -259,6 +316,7 @@ func NewProjector(name, manufacturer, model, info, errorStatus string, lampHours
 		_model:               model,
 		_info:                info,
 		_errorStatus:         errorStatus,
+		_inputList:           inputList,
 		_PJLinkClass:         2,
 		_port:                4352,
 		_PJLinkPower:         POWER_OFF,
@@ -271,7 +329,7 @@ func NewProjector(name, manufacturer, model, info, errorStatus string, lampHours
 	}
 }
 
-func NewDisplay(name, manufacturer, model, info, errorStatus string) PJLinkDevice {
+func NewDisplay(name, manufacturer, model, info, errorStatus string, inputList []int) PJLinkDevice {
 	if name == "" {
 		name = fmt.Sprintf("Display Emulator %d", rand.Intn(998)+1)
 	}
@@ -287,12 +345,16 @@ func NewDisplay(name, manufacturer, model, info, errorStatus string) PJLinkDevic
 	if errorStatus == "" {
 		errorStatus = "000000"
 	}
+	if len(inputList) == 0 {
+		inputList = defaultInputList()
+	}
 	return PJLinkDevice{
 		_PJLinkName:      name,
 		_manufacturer:    manufacturer,
 		_model:           model,
 		_info:            info,
 		_errorStatus:     errorStatus,
+		_inputList:       inputList,
 		_PJLinkClass:     1,
 		_port:            4352,
 		_PJLinkPower:     POWER_OFF,
@@ -405,6 +467,10 @@ func describePJLinkCommand(line string) string {
 		if param == "?" {
 			return "query error status"
 		}
+	case "%1INST":
+		if param == "?" {
+			return "query available inputs"
+		}
 	case "%1POWR":
 		switch param {
 		case "?":
@@ -506,6 +572,8 @@ func describePJLinkResponse(line string) string {
 		return "other information"
 	case "%1ERST":
 		return describeErrorStatus(value)
+	case "%1INST":
+		return "available inputs"
 	case "%1POWR":
 		switch value {
 		case "0":
@@ -674,14 +742,20 @@ func main() {
 	modelPtr := flag.String("model", "", "Model name")
 	infoPtr := flag.String("info", "", "Other device information returned by %1INFO ?")
 	erstPtr := flag.String("erst", "", "Error status returned by %1ERST ? as 6 digits using only 0, 1, or 2")
+	instPtr := flag.String("inst", "", "Available inputs returned by %1INST ? as a comma- or space-separated list, e.g. 31,32,51")
 	lampHoursPtr := flag.Int("lamp-hours", -1, "Lamp hours for projector (-1 = use default of 10)")
 	flag.Parse()
 
+	inputList, ok := parseInputList(*instPtr)
+	if !ok {
+		log.Fatal("invalid -inst value: use unique PJLink input codes separated by commas or spaces")
+	}
+
 	var device PJLinkDevice
 	if *isDisplayPtr {
-		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr)
+		device = NewDisplay(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList)
 	} else {
-		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, *lampHoursPtr)
+		device = NewProjector(*namePtr, *mfgPtr, *modelPtr, *infoPtr, *erstPtr, inputList, *lampHoursPtr)
 	}
 
 	if !validErrorStatus(device._errorStatus) {
@@ -700,6 +774,7 @@ func main() {
 	logStartupField("Model", device._model)
 	logStartupField("Other info", device._info)
 	logStartupField("Error status", device._errorStatus)
+	logStartupField("Input list", formatInputList(device._inputList))
 	logStartupField("Class", device._PJLinkClass)
 	logStartupField("Lamp hours", device._PJLinkLampHours)
 
@@ -803,6 +878,9 @@ func handleCommand(inp string, conn net.Conn, device *PJLinkDevice) {
 
 	case "%1ERST ?":
 		replyValue(header, device._errorStatus, conn)
+
+	case "%1INST ?":
+		replyValue(header, formatInputList(device._inputList), conn)
 
 	// ── Power ────────────────────────────────────────────────────────
 
